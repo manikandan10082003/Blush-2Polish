@@ -406,42 +406,57 @@ const supabaseClient=window.supabase.createClient(SUPABASE_URL,SUPABASE_PUBLISHA
 
 async function loadCloudData(){
   try{
-    const [s,c,b]=await Promise.all([
+    // Public visitors can read services/categories. Bookings are private
+    // and are only queried after an authenticated Admin/Staff session exists.
+    const [s,c]=await Promise.all([
       supabaseClient.from("services").select("*").order("id"),
-      supabaseClient.from("categories").select("*").order("id"),
-      supabaseClient.from("bookings").select("*").order("created_at",{ascending:false})
+      supabaseClient.from("categories").select("*").order("id")
     ]);
-    if(s.error)throw s.error;if(c.error)throw c.error;if(b.error)throw b.error;
+    if(s.error)throw s.error;
+    if(c.error)throw c.error;
 
     if(s.data?.length){
       services.splice(0,services.length,...s.data.map(x=>({
         id:Number(x.id),cat:x.category,name:x.name,price:Number(x.price),
         duration:Number(x.duration),desc:x.description||"",image:x.image||""
       })));
-    }else{
-      await supabaseClient.from("services").upsert(services.map(x=>({
+    }else if(isFullAdmin()){
+      const {error}=await supabaseClient.from("services").upsert(services.map(x=>({
         id:Number(x.id),name:x.name,category:x.cat,price:Number(x.price),
         duration:Number(x.duration),description:x.desc||"",image:x.image||""
       })),{onConflict:"id"});
+      if(error)console.error("Initial service sync failed",error);
     }
 
     if(c.data?.length){
       cats.splice(0,cats.length,"All",...c.data.map(x=>x.name));
-    }else{
-      await supabaseClient.from("categories").upsert(cats.slice(1).map(name=>({name})),{onConflict:"name"});
+    }else if(isFullAdmin()){
+      const rows=cats.slice(1).map(name=>({name}));
+      if(rows.length){
+        const {error}=await supabaseClient.from("categories").upsert(rows,{onConflict:"name"});
+        if(error)console.error("Initial category sync failed",error);
+      }
     }
 
-    bookings.splice(0,bookings.length,...(b.data||[]).map(x=>({
-      id:x.id,name:x.name,phone:x.phone,email:x.email||"",date:x.booking_date,
-      time:x.booking_time,services:x.services||[],amount:Number(x.amount||0),
-      notes:x.notes||"",status:x.status||"Pending"
-    })));
+    // Never request private bookings from the public/anonymous session.
+    if(isFullAdmin() || state.user?.role==="staff"){
+      const {data:b,error:bError}=await supabaseClient
+        .from("bookings").select("*").order("created_at",{ascending:false});
+      if(bError)throw bError;
+      bookings.splice(0,bookings.length,...(b||[]).map(x=>({
+        id:x.id,name:x.name,phone:x.phone,email:x.email||"",date:x.booking_date,
+        time:x.booking_time,services:x.services||[],amount:Number(x.amount||0),
+        notes:x.notes||"",status:x.status||"Pending"
+      })));
+      localStorage.setItem("blushBookings",JSON.stringify(bookings));
+    }
 
     localStorage.setItem("blushServices",JSON.stringify(services));
     localStorage.setItem("blushCategories",JSON.stringify(cats.slice(1)));
-    localStorage.setItem("blushBookings",JSON.stringify(bookings));
-    render();
-  }catch(e){console.error("Supabase load failed",e);toast("Cloud connection failed");}
+  }catch(e){
+    console.error("Supabase load failed",e);
+    toast("Cloud connection failed");
+  }
 }
 
 async function cloudSaveServices(){
@@ -461,12 +476,14 @@ async function cloudSaveCategories(){
 }
 
 async function cloudSaveBooking(x){
-  const {error}=await supabaseClient.from("bookings").upsert({
+  // Customer bookings are created with INSERT only. Anonymous customers
+  // must never receive UPDATE permission just to support an upsert.
+  const {error}=await supabaseClient.from("bookings").insert({
     id:String(x.id),name:x.name,phone:x.phone,email:x.email||"",
     booking_date:x.date,booking_time:x.time,services:x.services||[],
     amount:Number(x.amount||0),notes:x.notes||"",status:x.status||"Pending"
-  },{onConflict:"id"});
-  if(error)console.error("Booking cloud save failed",error);
+  });
+  if(error)console.error("Booking cloud save failed",error?.message||error);
 }
 
 async function cloudUpdateBookingStatus(x){
