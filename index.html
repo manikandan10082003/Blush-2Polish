@@ -620,7 +620,7 @@ function startSupabaseRealtime(){
     const savedServices=JSON.parse(localStorage.getItem("blushServices")||"null");
     if(Array.isArray(savedServices))services.splice(0,services.length,...savedServices);
     const bookings=JSON.parse(localStorage.getItem("blushBookings")||"[]");
-    const state={page:"home",filter:"All",search:"",adminSearch:"",bookingSearch:"",customerSearch:"",cart:[],detail:null,login:false,user:null,loginError:"",date:"",time:"",checkout:false,confirmation:null,adminTab:"dashboard",reportMonth:new Date().toISOString().slice(0,7),serviceModal:null,categoryModal:null,adminMemberModal:null};
+    const state={page:"home",filter:"All",search:"",adminSearch:"",bookingSearch:"",customerSearch:"",cart:[],detail:null,login:false,user:null,loginError:"",date:"",time:"",checkout:false,confirmation:null,adminTab:"dashboard",reportMonth:new Date().toISOString().slice(0,7),serviceModal:null,categoryModal:null,adminMemberModal:null,adminMembers:[]};
 
     const adminUsers=[];
     const demoUsers=[];
@@ -682,6 +682,20 @@ function startSupabaseRealtime(){
       return data||[];
     }
 
+    async function loadAdminMembers(){
+      if(!isFullAdmin())return;
+      try{
+        const {data,error}=await supabaseClient.functions.invoke("create-admin-user",{body:{action:"list"}});
+        if(error)throw error;
+        if(!data?.ok)throw new Error(data?.error||"Could not load admin members");
+        state.adminMembers=Array.isArray(data.users)?data.users:[];
+      }catch(error){
+        console.error("Admin member list failed",error);
+        state.adminMembers=[];
+        toast(error?.message||"Could not load admin members");
+      }
+    }
+
 async function restoreAdminSession(){
       try{
         const {data,error}=await supabaseClient.auth.getSession();
@@ -739,7 +753,24 @@ async function restoreAdminSession(){
     function saveCategories(){localStorage.setItem("blushCategories",JSON.stringify(cats.slice(1)));cloudSaveCategories()}
     function openCategoryModal(category=null){state.categoryModal=category===null?"new":category;render()}
     function closeCategoryModal(){state.categoryModal=null;render()}
-    function deleteCategory(category){if(!isFullAdmin()){toast("Only Admin can delete categories");return}const serviceCount=services.filter(service=>service.cat===category).length;if(serviceCount){toast(`Move or delete ${serviceCount} service${serviceCount===1?"":"s"} before deleting this category`);return}if(confirm(`Delete the ${category} category?`)){const index=cats.indexOf(category);if(index>0){cats.splice(index,1);saveCategories();render();toast("Category deleted successfully")}}}
+    async function deleteCategory(category){
+      if(!isFullAdmin()){toast("Only Admin can delete categories");return}
+      const serviceCount=services.filter(service=>service.cat===category).length;
+      if(serviceCount){toast(`Move or delete ${serviceCount} service${serviceCount===1?"":"s"} before deleting this category`);return}
+      if(!confirm(`Delete the ${category} category permanently?`))return;
+      try{
+        const {error}=await supabaseClient.from("categories").delete().eq("name",category);
+        if(error)throw error;
+        const index=cats.indexOf(category);
+        if(index>0)cats.splice(index,1);
+        localStorage.setItem("blushCategories",JSON.stringify(cats.slice(1)));
+        render();
+        toast("Category deleted successfully");
+      }catch(error){
+        console.error("Category delete failed:",error);
+        toast(error?.message||"Could not delete category");
+      }
+    }
     function saveCategory(e,original){if(!isFullAdmin()){toast("Only Admin can change categories");return}e.preventDefault();const name=e.target.elements.name.value.trim();if(!name){toast("Enter a category name");return}if(cats.some(category=>category.toLowerCase()===name.toLowerCase()&&category!==original)){toast("That category already exists");return}if(original===null){cats.push(name);toast("Category added successfully")}else{const index=cats.indexOf(original);if(index>0){cats[index]=name;services.forEach(service=>{if(service.cat===original)service.cat=name});toast("Category updated successfully")}}saveCategories();saveServices();closeCategoryModal()}
     function saveBookings(){localStorage.setItem("blushBookings",JSON.stringify(bookings));bookings.forEach(cloudSaveBooking)}
     function saveAdmins(){}
@@ -943,14 +974,14 @@ async function restoreAdminSession(){
     } else if(tab==="reports"){
     body=reportPanel();
     } else if(tab==="admins"){
-    body=`<div class="admin-top"><div><h1>Admin access</h1><p style="color:var(--muted)">Only users with an Admin or Staff role can access this portal.</p></div>${canManage?'<button class="btn btn-primary" onclick="openAdminMemberModal()">+ Add Admin / Staff</button>':''}</div><div style="background:#fff;border:1px solid var(--line);border-radius:18px;padding:24px"><span class="pill confirmed">${state.user?.role==="admin"?"Admin":"Staff"}</span><h2 style="font:600 34px 'Cormorant Garamond',serif;margin:14px 0 6px">${state.user?.email||"Authenticated user"}</h2><p style="color:var(--muted);line-height:1.7">${canManage?"You have full control. Only you and other authorized Admins can create Admin or Staff accounts.":"You have view-only access. You cannot modify services, categories, bookings, or users."}</p></div>`;
+    body=`<div class="admin-top"><div><h1>Admin access</h1><p style="color:var(--muted)">Only users with an Admin or Staff role can access this portal.</p></div>${canManage?'<button class="btn btn-primary" onclick="openAdminMemberModal()">+ Add Admin / Staff</button>':''}</div><div style="background:#fff;border:1px solid var(--line);border-radius:18px;padding:24px;margin-bottom:18px"><span class="pill confirmed">${state.user?.role==="admin"?"Admin":"Staff"}</span><h2 style="font:600 34px 'Cormorant Garamond',serif;margin:14px 0 6px">${state.user?.email||"Authenticated user"}</h2><p style="color:var(--muted);line-height:1.7">${canManage?"You have full control. Only you and other authorized Admins can create Admin or Staff accounts.":"You have view-only access. You cannot modify services, categories, bookings, or users."}</p></div><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Name</th><th>Email</th><th>Role</th><th>Created</th></tr></thead><tbody>${state.adminMembers.length?state.adminMembers.map(member=>`<tr><td><b>${member.name||"User"}</b></td><td>${member.email||""}</td><td><span class="pill ${member.role==="admin"?"confirmed":"active"}">${member.role==="admin"?"Admin":"Staff"}</span></td><td>${member.created_at?new Date(member.created_at).toLocaleDateString("en-IN"):""}</td></tr>`).join(""):`<tr><td colspan="4"><div class="empty">No Admin or Staff accounts found.</div></td></tr>`}</tbody></table></div>`;
     } else {
     const customers=[...bookings.reduce((list,booking)=>{const key=`${(booking.name||"").trim().toLowerCase()}|${booking.phone||""}`;const customer=list.get(key)||{name:booking.name||"Customer",phone:booking.phone||"Not provided",email:booking.email||"",services:[],requests:0,status:booking.status||"Pending",createdAt:booking.createdAt||""};customer.requests++;if(booking.email)customer.email=booking.email;(booking.services||[]).forEach(service=>{if(!customer.services.includes(service))customer.services.push(service)});if((booking.createdAt||"")>=customer.createdAt){customer.status=booking.status||"Pending";customer.createdAt=booking.createdAt||""}list.set(key,customer);return list},new Map()).values()];
     const customerQuery=state.customerSearch.trim().toLowerCase();
     const filteredCustomers=customers.filter(customer=>!customerQuery||customer.name.toLowerCase().includes(customerQuery));
     body=`<div class="admin-top"><div><h1>Customers</h1><p style="color:var(--muted)">Customer details are saved automatically from booking requests.</p></div></div><div style="margin-bottom:18px"><input class="customer-search" style="width:min(520px,100%);padding:13px 16px;border:1px solid var(--line);border-radius:999px;background:#fff" placeholder="Search by customer name..." value="${state.customerSearch.replace(/"/g,"&quot;")}" oninput="updateCustomerSearch(this.value)"></div><div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Customer name</th><th>Mobile number</th><th>Email</th><th>Requested / booked services</th><th>Requests</th><th>Latest status</th></tr></thead><tbody>${filteredCustomers.length?filteredCustomers.map(customer=>`<tr><td><b>${customer.name}</b></td><td>${customer.phone}</td><td>${customer.email||"Not provided"}</td><td>${customer.services.join(", ")}</td><td>${customer.requests}</td><td><span class="pill ${customer.status.toLowerCase()}">${customer.status}</span></td></tr>`).join(""):`<tr><td colspan="6"><div class="empty">${customers.length?"No customers match your search.":"No customer bookings have been saved yet."}</div></td></tr>`}</tbody></table></div>`;
     }
-    return `<div class="admin-shell"><aside class="admin-side"><div class="brand"><img class="brand-mark" src="logo.jpeg" alt="Blush & Polish logo"><div class="brand-copy"><strong>Blush & Polish</strong><span style="color:#b7c5ae">ADMIN PANEL</span></div></div><div class="admin-nav">${[["dashboard","Dashboard"],["services","Services"],["categories","Categories"],["bookings","Bookings"],["reports","Reports"],["customers","Customers"]].concat(canManage?[["admins","Admin members"]]:[]).map(x=>`<button class="${tab===x[0]?'active':''}" onclick="state.adminTab='${x[0]}';render()">${x[1]}</button>`).join("")}<button onclick="go('home')">View website</button><button onclick="logout()">Log out</button></div></aside><main class="admin-main">${body}</main></div>`;
+    return `<div class="admin-shell"><aside class="admin-side"><div class="brand"><img class="brand-mark" src="logo.jpeg" alt="Blush & Polish logo"><div class="brand-copy"><strong>Blush & Polish</strong><span style="color:#b7c5ae">ADMIN PANEL</span></div></div><div class="admin-nav">${[["dashboard","Dashboard"],["services","Services"],["categories","Categories"],["bookings","Bookings"],["reports","Reports"],["customers","Customers"]].concat(canManage?[["admins","Admin members"]]:[]).map(x=>`<button class="${tab===x[0]?'active':''}" onclick="state.adminTab='${x[0]}';render();if('${x[0]}'==='admins')loadAdminMembers().then(()=>render())">${x[1]}</button>`).join("")}<button onclick="go('home')">View website</button><button onclick="logout()">Log out</button></div></aside><main class="admin-main">${body}</main></div>`;
     }
 
     function serviceModal(){
@@ -980,6 +1011,9 @@ async function restoreAdminSession(){
         if(error)throw error;
         if(!data?.ok)throw new Error(data?.error||"Could not create account");
         closeAdminMemberModal();
+        await loadAdminMembers();
+        state.adminTab="admins";
+        render();
         toast(`${role==="admin"?"Admin":"Staff"} account created successfully`);
       }catch(err){
         console.error("Create admin/staff failed",err);
@@ -996,7 +1030,22 @@ async function restoreAdminSession(){
 
 
     function saveDemoService(e,id){if(!isFullAdmin()){toast("Only Admin can change services");return}e.preventDefault();const f=e.target;const data={name:f.elements.name.value.trim(),cat:f.elements.cat.value,price:Number(f.elements.price.value),duration:Number(f.elements.duration.value),image:f.elements.image.value.trim(),desc:f.elements.desc.value.trim()};if(id===null){services.push({id:Date.now(),...data});saveServices();closeServiceModal();toast("Service added successfully")}else{Object.assign(svc(id),data);saveServices();closeServiceModal();toast("Service updated successfully")}}
-    function deleteDemoService(id){if(!isFullAdmin()){toast("Only Admin can delete services");return}if(confirm("Delete this demo service?")){const i=services.findIndex(s=>s.id===id);if(i>=0)services.splice(i,1);saveServices();render();toast("Service deleted")}}
+    async function deleteDemoService(id){
+      if(!isFullAdmin()){toast("Only Admin can delete services");return}
+      if(!confirm("Delete this service permanently?"))return;
+      try{
+        const {error}=await supabaseClient.from("services").delete().eq("id",Number(id));
+        if(error)throw error;
+        const i=services.findIndex(s=>Number(s.id)===Number(id));
+        if(i>=0)services.splice(i,1);
+        localStorage.setItem("blushServices",JSON.stringify(services));
+        render();
+        toast("Service deleted successfully");
+      }catch(error){
+        console.error("Service delete failed:",error);
+        toast(error?.message||"Could not delete service");
+      }
+    }
 
     function render(){
     let content="";
